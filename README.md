@@ -1,0 +1,1 @@
+# Collection of PowerShell scripts related to SharePoint administration
