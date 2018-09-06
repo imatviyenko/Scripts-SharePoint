@@ -20,6 +20,10 @@ Optional switch parameter specifying whether to process files (default) or subfo
 .PARAMETER Mode
 Processing mode, can be either 'report' for reporting only or 'fix' for actual replacement of old invalid logins with the new ones according to the mappings provided in the 'LoginMappings' hashtable parameter
 
+.PARAMETER StdOut
+Script output mode, specifies whether to use colored output to console (default) or use the standard output stream if you add this switch parameter, which can be further redirected to a text file
+
+
 .PARAMETER LoginMappings
 Hashtable with the mappings of old logins to new logins for file authors. Required if 'fix' value was specified for the 'Mode' parameter. The logins must be in the claims format (i.e., i:0#.w|DOMAIN\samAccountName)
 
@@ -28,6 +32,12 @@ Hashtable with the mappings of old logins to new logins for file authors. Requir
 .\fix-author.ps1 -WebURL "https://sp.company.com/sites/it" -RootFolderPath "Inventory" -Mode report
 
 This command will check all files in the "Inventory" document libary under the "https://sp.company.com/sites/it" SharePoint web site for missing/incorrect logins of file authors and will output the report including the number of 'bad' files with such an author and the list of all found problematic file authors' logins
+
+
+.EXAMPLE
+.\fix-author.ps1 -WebURL "https://sp.company.com/sites/it" -RootFolderPath "Inventory" -Mode report -StdOut | Out-File .\scriptlog.txt
+
+The same as the previous example, but all script output is sent to the standard output stream and redirected to a text file 'scriptlog.txt' in the current folder
 
 
 .EXAMPLE
@@ -84,7 +94,14 @@ Param(
     HelpMessage="Processing mode, can be either 'report' for reporting only or 'fix' for actual replacement of old invalid logins with the new ones according to the mappings provided in the 'LoginMappings' hashtable parameter"
   )]
   [ValidateSet("report","fix")]
-  [string] $Mode = "report"
+  [string] $Mode = "report",
+
+  [Parameter(
+    Position=5,
+    Mandatory=$false,
+    HelpMessage="Switch parameter specifying whether to use colored output to console (default) or use the standard output stream"
+  )]
+  [switch] $StdOut
 )
 
 
@@ -93,7 +110,7 @@ DynamicParam {
         $loginMappingsParamAttribute = New-Object System.Management.Automation.ParameterAttribute;
         $loginMappingsParamAttribute.HelpMessage = "Hashtable with the mappings of old logins to new logins for file authors";
         $loginMappingsParamAttribute.Mandatory = $true;
-        $loginMappingsParamAttribute.Position = 5;
+        $loginMappingsParamAttribute.Position = 6;
         $attributeCollection = New-Object System.Collections.ObjectModel.Collection[System.Attribute];
         $attributeCollection.Add($loginMappingsParamAttribute);
         $loginMappingsParam = New-Object System.Management.Automation.RuntimeDefinedParameter('LoginMappings', [hashtable], $attributeCollection);
@@ -104,53 +121,61 @@ DynamicParam {
 }
 
 Process {
-
     $ErrorActionPreference = "Stop";
     Add-PSSnapin Microsoft.SharePoint.PowerShell;
 
-    #$webUrl = "https://sp.kcell.kz/forms/b2b";
-    #$rootFolderPath = "Attachments_B2B_RtCC";
-
-    #$mode = "FIX";
-    #$mode = "REPORT";
-
-    #$Global:loginMappings = @{};
-    #$Global:loginMappings.Add("Old login", "New login");
-    #$Global:loginMappings.Add("i:0#.w|kcell.kz\s.khussainova", "i:0#.w|kcell.kz\shakhidam.zulyarova");
 
     Write-Host "`n*************************************************************";
-    Write-Host "Starting scipt in $mode mode`n`n";
+    Write-Host "Starting script in $mode mode`n`n";
+
+    if ($Mode -eq "fix") {
+        Write-Verbose "PSBoundParameters.LoginMappings: $($PSBoundParameters.LoginMappings)";
+        $Script:loginMappings = $PSBoundParameters.LoginMappings;
+    };
+    
 
     $spWeb = Get-SPWeb $WebUrl;
     $spRootFolder = $spWeb.GetFolder($RootFolderPath);
 
-    if ($Mode -eq "REPORT") {
-        $Global:goodFolderCount = 0;
-        $Global:badFolderCount = 0;
-        $Global:invalidAuthorLogins = @();
-    };
+    if ($Mode -eq "report") {
+        $Script:goodFolderCount = 0;
+        $Script:badFolderCount = 0;
+        $Script:invalidAuthorLogins = @();
+    } elseif ($Mode -eq "fix") {
+        $Script:fixedFolderCount = 0;
+        $Script:unfixedFolderCount = 0;
+    }
+    
 
     $counter = 0;
-    foreach ($spFolder in $spRootFolder.SubFolders) {
 
-        if ($spFolder.Name -ne "7448") {
-            #continue;
+    if ($ProcessSubfolders -eq $false) {
+        if ($Mode -eq "report") {
+            ReportDocLibFolder $spRootFolder;
+        } elseif ($Mode -eq "fix") {
+            FixDocLibFolder $spRootFolder;
         };
-
         $counter++;
-        if ($Mode -eq "REPORT") {
-            ReportDocLibFolder $spFolder;
-        } elseif ($Mode -eq "FIX") {
-            FixDocLibFolder $spFolder;
+    } else {
+        foreach ($spFolder in $spRootFolder.SubFolders) {
+            $counter++;
+            if ($Mode -eq "report") {
+                ReportDocLibFolder $spFolder;
+            } elseif ($Mode -eq "fix") {
+                FixDocLibFolder $spFolder;
+            };
         };
-    };
+    }
 
     Write-Host "`n`nCount of processed folders: $counter";
-    if ($Mode -eq "REPORT") {
-        Write-Host "goodFolderCount: $Global:goodFolderCount";
-        Write-Host "badFolderCount: $Global:badFolderCount";
-        $invalidLoginsAsString = $Global:invalidAuthorLogins -join ";";
+    if ($Mode -eq "report") {
+        Write-Host "goodFolderCount: $Script:goodFolderCount";
+        Write-Host "badFolderCount: $Script:badFolderCount";
+        $invalidLoginsAsString = $Script:invalidAuthorLogins -join ";";
         Write-Host "`ninvalidAuthorLogins: $invalidLoginsAsString";
+    } else {
+        Write-Host "fixedFolderCount: $Script:fixedFolderCount";
+        Write-Host "unfixedFolderCount: $Script:unfixedFolderCount";
     };
 
     Write-Host "`nScript completed execution";
@@ -159,9 +184,23 @@ Process {
 
 Begin {
         
+        $colorMappings = @{"INFO" = "green"; "WARNING" = "yellow"; "ERROR" = "red"};
+        function WriteOutput($level, $status, $message){
+            if ($StdOut) {
+                Write-Output "$level`t$status`t$message";
+            } else {
+                $color = $colorMappings[$level];
+                Write-Host "$level`t$status`t$message" -ForegroundColor $color;
+            }
+        }
+        
+        
         function FixAuthor($spFile, $badLogin) {
+            Write-Verbose "FixAuthor invoked";
+            Write-Verbose "spFile.Name: $($spFile.Name)";
+            Write-Verbose "Script:loginMappings: $($Script:loginMappings)";
             $spFileItem = $spFile.Item;
-            $goodLogin = $Global:loginMappings[$badLogin];
+            $goodLogin = $Script:loginMappings[$badLogin];
             if ($goodLogin -eq $null) {
                 return $null; # no mapping found
             };
@@ -169,12 +208,12 @@ Begin {
     
             $createdDate = $spFileItem["Created"];
             $modifiedDate = $spFileItem["Modified"];
-            Write-Host "createdDate: $createdDate `t modifiedDate: $modifiedDate";
+            Write-Verbose "createdDate: $createdDate `t modifiedDate: $modifiedDate";
 
             [bool] $dirty = $false;
 
             if ($spFileItem.Properties["vti_author"] -eq $badLogin) {
-                Write-Host "badLogin: $badLogin `t goodLogin: $goodLogin";
+                Write-Verbose "badLogin: $badLogin `t goodLogin: $goodLogin";
                 $spFileItem.Properties["vti_author"] = $goodLogin;
                 $dirty = $true;
             };
@@ -187,7 +226,7 @@ Begin {
             if ($dirty) {
                 $spFileItem["Created"] = $createdDate;
                 $spFileItem["Modified"] = $modifiedDate;
-                #$spFileItem.UpdateOverwriteVersion();
+                $spFileItem.UpdateOverwriteVersion();
                 return $goodLogin; # file properties updated
             } else {
                 return $null; # no properties updated
@@ -199,47 +238,68 @@ Begin {
 
 
         function ReportDocLibFolder($spFolder) {
+            Write-Verbose "ReportDocLibFolder invoked";
+            Write-Verbose "spFolder.Name: $($spFolder.Name)";
             $spFiles = $spFolder.Files;
             $folderOk = $true;
             foreach ($spFile in $spFiles) {
+                Write-Verbose "spFile.Name: $($spFile.Name)";
                 $spFileItem = $spFile.Item;
+                
+                
+                if ($spFileItem.Properties -eq $null)
+                {
+                    WriteOutput "ERROR" "ITEM_PROPERTIES_NULL" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tspFileItem.Properties is null, skipping this item";
+                    continue;
+                };
+
                 $author = $spFileItem.Properties["vti_author"];
                 $modifiedby = $spFileItem.Properties["vti_modifiedby"];
-                #$author3 = $spfile.get_Author();
                 $spUser = $spWeb.SiteUsers[$author];
 
                 if ($spUser -eq $null) {
-                    Write-Host "INVALID_AUTHOR`tsubfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby" -ForegroundColor Yellow;
+                    WriteOutput "WARNING" "INVALID_AUTHOR" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby";
                     $folderOk = $false;
-                    if ($Global:invalidAuthorLogins -notcontains $author) {
-                        $Global:invalidAuthorLogins += $author;
+                    if ($Script:invalidAuthorLogins -notcontains $author) {
+                        $Script:invalidAuthorLogins += $author;
                     };
                 } else {
-                    Write-Host "OK`tsubfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby" -ForegroundColor Green;
+                    WriteOutput "INFO" "FOLDER_OK" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby";
                 };
             };
             if ($folderOk) {
-                $Global:goodFolderCount++;
+                $Script:goodFolderCount++;
             } else {
-                $Global:badFolderCount++;
+                $Script:badFolderCount++;
             };
         }; # ReportDocLibFolder
 
 
         function FixDocLibFolder($spFolder) {
+            Write-Verbose "FixDocLibFolder invoked";
             $spFiles = $spFolder.Files;
             foreach ($spFile in $spFiles) {
                 $spFileItem = $spFile.Item;
+
+                if ($spFileItem.Properties -eq $null)
+                {
+                    WriteOutput "ERROR" "ITEM_PROPERTIES_NULL" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tspFileItem.Properties is null, skipping this item";
+                    continue;
+                };
+
                 $author = $spFileItem.Properties["vti_author"];
                 $spUser = $spWeb.SiteUsers[$author];
 
                 if ($spUser -eq $null) {
-                    Write-Host "`nINVALID_AUTHOR`t$($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby" -ForegroundColor Yellow;
+                    WriteOutput "WARNING" "INVALID_AUTHOR" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby";
+
                     $newAuthor = FixAuthor $spFile $author;
                     if ($newAuthor -eq $null) {
-                        Write-Host "ERROR_FIXING_AUTHOR`t$($spfile.Name)`tauthor: $author`tnewAuthor: $newAuthor" -ForegroundColor Red;
+                        WriteOutput "ERROR" "NO_MAPPING" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tLoginMappings hashtable does not contain an entry for this invalid login, skipping this item";
+                        $Script:unfixedFolderCount++;
                     } else {
-                        Write-Host "AUTHOR_FIXED`t$($spfile.Name)`tauthor: $author`tnewAuthor: $newAuthor" -ForegroundColor Green;
+                        WriteOutput "INFO" "FILE_FIXED" "subfolder: $($spFolder.Name)`tfile: $($spfile.Name)`tauthor: $author`tmodifiedby: $modifiedby`tnewAuthor: $newAuthor";
+                        $Script:fixedFolderCount++;
                     };
 
                 };

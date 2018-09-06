@@ -7,5 +7,6 @@ This script can be used to find all such problematic files and change the file a
 Usually you would like to run the script in 'report' mode on a certain folder in a document library first to get the list of the missing/incorrect authors logins and then use this list to prepare a hashtable with the mappings "old login"->"new login" required for the 'fix' mode.
 
 ## Usage
-Use the built-on PowerShell Get-Help facility to get information on usage scenarios as well as some examples.
+Use the built-on PowerShell Get-Help facility to get information on usage scenarios as well as some examples. 
+
 **PS C:\>Get-Help .\fix-authors.ps1**
